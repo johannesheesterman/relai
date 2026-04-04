@@ -1,0 +1,31 @@
+{
+  "name": "relai",
+  "version": "0.1.0",
+  "description": "Semantic indexing layer over heterogeneous data sources",
+  "type": "module",
+  "main": "src/index.ts",
+  "bin": {
+    "relai": "src/cli/relai.ts"
+  },
+  "scripts": {
+    "dev": "bun run src/cli/relai.ts",
+    "test": "bun test",
+    "build": "bun build src/index.ts --outdir dist --target node"
+  },
+  "dependencies": {
+    "node-llama-cpp": "^3.17.1",
+    "better-sqlite3": "^12.4.5",
+    "sqlite-vec": "^0.1.7-alpha.2"
+  },
+  "optionalDependencies": {
+    "sqlite-vec-darwin-arm64": "^0.1.7-alpha.2",
+    "sqlite-vec-darwin-x64": "^0.1.7-alpha.2",
+    "sqlite-vec-linux-arm64": "^0.1.7-alpha.2",
+    "sqlite-vec-linux-x64": "^0.1.7-alpha.2"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
+    "typescript": "^5.9.3"
+  },
+  "license": "MIT"
+}
