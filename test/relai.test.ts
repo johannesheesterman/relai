@@ -1,12 +1,13 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { openDatabase, type Database } from "../src/db.js";
-import { createViewStore } from "../src/view-store.js";
+import { describe, test, expect, afterEach } from "bun:test";
+import { mkdtempSync, rmSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
+import { Relai } from "../src/relai.js";
 import { createClaimStore } from "../src/claim-store.js";
-import { createVectorIndex } from "../src/vector-index.js";
-import type { Embedder, ViewStore, ClaimStore, VectorIndex } from "../src/types.js";
+import { openDatabase, type Database } from "../src/db.js";
+import { ref, type Embedder, type VectorIndex } from "../src/types.js";
 
 function createMockEmbedder(): Embedder {
-  // Simple hash-based embedder that produces deterministic 4-dim vectors
   function hash(text: string): number[] {
     let h = 0;
     for (let i = 0; i < text.length; i++) {
@@ -23,114 +24,175 @@ function createMockEmbedder(): Embedder {
   }
 
   return {
-    async embed(text: string) { return hash(text); },
-    async embedQuery(text: string) { return hash(text); },
+    async embed(text: string) {
+      return hash(text);
+    },
+    async embedQuery(text: string) {
+      return hash(text);
+    },
     async dispose() {},
   };
 }
 
-describe("Relai claim embedding", () => {
+function createMockVectorIndex(): VectorIndex {
+  const ids: string[] = [];
+
+  return {
+    async upsert(viewId: string) {
+      if (!ids.includes(viewId)) ids.push(viewId);
+    },
+    async search(_vector: number[], k: number) {
+      return ids.slice(0, k).map((viewId, index) => ({
+        viewId,
+        score: 1 - index / 100,
+      }));
+    },
+  };
+}
+
+describe("Relai core claims", () => {
+  let tmpDir: string | undefined;
+
+  afterEach(() => {
+    if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
+    tmpDir = undefined;
+  });
+
+  function createRelai(): Relai {
+    tmpDir = mkdtempSync(join(tmpdir(), "relai-test-"));
+    return new Relai({
+      dbPath: join(tmpDir, "relai.sqlite"),
+      embedder: createMockEmbedder(),
+      vectorIndex: createMockVectorIndex(),
+    });
+  }
+
+  test("stores literal properties and reference relationships as claims", async () => {
+    const relai = createRelai();
+    try {
+      await relai.put("hubspot:ticket:1", "Support ticket for Acme");
+      await relai.claim("hubspot:ticket:1", "priority", "high");
+      await relai.claim("hubspot:ticket:1", "customer", ref("customer:acme"));
+
+      const claims = await relai.match({ subject: "hubspot:ticket:1" });
+
+      expect(claims).toHaveLength(2);
+      expect(claims).toContainEqual({
+        subject: "hubspot:ticket:1",
+        predicate: "priority",
+        object: "high",
+      });
+      expect(claims).toContainEqual({
+        subject: "hubspot:ticket:1",
+        predicate: "customer",
+        object: ref("customer:acme"),
+      });
+    } finally {
+      await relai.dispose();
+    }
+  });
+
+  test("cross-system customer anchor connects HubSpot, Jira, and ClickUp", async () => {
+    const relai = createRelai();
+    try {
+      await relai.put("customer:acme", "Customer Acme");
+      await relai.put("hubspot:ticket:1", "HubSpot ticket for Acme");
+      await relai.put("jira:issue:APP-1", "Jira issue for Acme");
+      await relai.put("clickup:task:abc", "ClickUp task for Acme");
+
+      await relai.claim("hubspot:ticket:1", "customer", ref("customer:acme"));
+      await relai.claim("jira:issue:APP-1", "customer", ref("customer:acme"));
+      await relai.claim("clickup:task:abc", "customer", ref("customer:acme"));
+
+      const claims = await relai.match({
+        predicate: "customer",
+        object: ref("customer:acme"),
+      });
+
+      expect(claims.map((claim) => claim.subject).sort()).toEqual([
+        "clickup:task:abc",
+        "hubspot:ticket:1",
+        "jira:issue:APP-1",
+      ]);
+    } finally {
+      await relai.dispose();
+    }
+  });
+
+  test("describe returns outgoing and incoming claims", async () => {
+    const relai = createRelai();
+    try {
+      await relai.put("customer:acme", "Customer Acme");
+      await relai.put("jira:issue:APP-1", "Jira issue for Acme");
+      await relai.claim("customer:acme", "name", "Acme");
+      await relai.claim("jira:issue:APP-1", "customer", ref("customer:acme"));
+
+      const description = await relai.describe("customer:acme");
+
+      expect(description.thing?.id).toBe("customer:acme");
+      expect(description.claims).toEqual([
+        { subject: "customer:acme", predicate: "name", object: "Acme" },
+      ]);
+      expect(description.incoming).toEqual([
+        {
+          subject: "jira:issue:APP-1",
+          predicate: "customer",
+          object: ref("customer:acme"),
+        },
+      ]);
+    } finally {
+      await relai.dispose();
+    }
+  });
+
+  test("put stores searchable text", async () => {
+    const relai = createRelai();
+    try {
+      await relai.put("customer:acme", "Customer Acme export issue");
+
+      const results = await relai.search("Acme", 1);
+
+      expect(results[0]?.id).toBe("customer:acme");
+    } finally {
+      await relai.dispose();
+    }
+  });
+});
+
+describe("claim store migration", () => {
   let db: Database;
-  let viewStore: ViewStore;
-  let claimStore: ClaimStore;
-  let vectorIndex: VectorIndex;
-  let embedder: Embedder;
 
-  beforeEach(() => {
+  afterEach(() => {
+    db.close();
+  });
+
+  test("migrates legacy from/type/to claims into reference claims", async () => {
     db = openDatabase(":memory:");
-    viewStore = createViewStore(db);
-    claimStore = createClaimStore(db);
-    vectorIndex = createVectorIndex(db);
-    embedder = createMockEmbedder();
-  });
+    db.exec(`
+      CREATE TABLE claims (
+        id TEXT PRIMARY KEY,
+        "from" TEXT NOT NULL,
+        type TEXT NOT NULL,
+        "to" TEXT NOT NULL,
+        created_by TEXT
+      )
+    `);
+    db.prepare(
+      `INSERT INTO claims (id, "from", type, "to") VALUES (?, ?, ?, ?)`
+    ).run("c1", "hubspot:ticket:1", "customer", "customer:acme");
 
-  test("claim creates an embedded view combining both endpoints", async () => {
-    // Index two views
-    const fromView = {
-      id: "view:tickets:123",
-      source: "tickets",
-      remoteId: "123",
-      text: "Ticket about adding dark mode",
-    };
-    const toView = {
-      id: "view:ticket-types:feature-request",
-      source: "ticket-types",
-      remoteId: "feature-request",
-      text: "Feature request: new functionality or enhancement",
-    };
-    await viewStore.put(fromView);
-    await viewStore.put(toView);
-    const v1 = await embedder.embed(fromView.text);
-    const v2 = await embedder.embed(toView.text);
-    await vectorIndex.upsert(fromView.id, v1);
-    await vectorIndex.upsert(toView.id, v2);
-
-    // Create claim — this should also create a claim view
-    const claimId = crypto.randomUUID();
-    await claimStore.put({
-      id: claimId,
-      from: fromView.id,
-      type: "type_of",
-      to: toView.id,
+    const store = createClaimStore(db);
+    const claims = await store.match({
+      predicate: "customer",
+      object: ref("customer:acme"),
     });
 
-    // Simulate what Relai.claim() does: create claim view
-    const [fromViews, toViews] = await Promise.all([
-      viewStore.getMany([fromView.id]),
-      viewStore.getMany([toView.id]),
+    expect(claims).toEqual([
+      {
+        subject: "hubspot:ticket:1",
+        predicate: "customer",
+        object: ref("customer:acme"),
+      },
     ]);
-    const fv = fromViews[0];
-    const tv = toViews[0];
-    const claimText = `${fv.text} type_of ${tv.text}`;
-    const claimView = {
-      id: `view:claim:${claimId}`,
-      source: "claim",
-      remoteId: claimId,
-      type: "claim",
-      text: claimText,
-      links: [
-        { type: "from", to: fromView.id },
-        { type: "to", to: toView.id },
-      ],
-    };
-    await viewStore.put(claimView);
-    const claimVector = await embedder.embed(claimText);
-    await vectorIndex.upsert(claimView.id, claimVector);
-
-    // Verify the claim view exists
-    const [result] = await viewStore.getMany([`view:claim:${claimId}`]);
-    expect(result).toBeDefined();
-    expect(result.type).toBe("claim");
-    expect(result.text).toContain("dark mode");
-    expect(result.text).toContain("type_of");
-    expect(result.text).toContain("Feature request");
-    expect(result.links).toHaveLength(2);
-    expect(result.links![0].to).toBe(fromView.id);
-    expect(result.links![1].to).toBe(toView.id);
-  });
-
-  test("claim view is findable via vector search", async () => {
-    // Index views and create claim view
-    await viewStore.put({
-      id: "view:tickets:1",
-      source: "tickets",
-      remoteId: "1",
-      text: "Bug report about login",
-    });
-    await viewStore.put({
-      id: "view:ticket-types:bug",
-      source: "ticket-types",
-      remoteId: "bug",
-      text: "Bug: a defect or error",
-    });
-
-    const bugVector = await embedder.embed("Bug report about login type_of Bug: a defect or error");
-    await vectorIndex.upsert("view:claim:c1", bugVector);
-
-    // Search with the same text should find it
-    const queryVector = await embedder.embedQuery("Bug report about login type_of Bug: a defect or error");
-    const results = await vectorIndex.search(queryVector, 5);
-    expect(results.length).toBeGreaterThan(0);
-    expect(results[0].viewId).toBe("view:claim:c1");
   });
 });
