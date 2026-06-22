@@ -1,5 +1,11 @@
 // src/search-pipeline.ts
-import type { RankedItem, SearchOptions, Reranker, QueryExpander } from "./types.js";
+import type {
+  RankedItem,
+  SearchOptions,
+  Reranker,
+  QueryExpander,
+  ExpandedQuery,
+} from "./types.js";
 import { reciprocalRankFusion, positionAwareBlend } from "./fusion.js";
 
 export type SearchDeps = {
@@ -39,7 +45,16 @@ export async function hybridSearch(
 
   const doExpand =
     (options.expand ?? true) && !!deps.expander && !strongSignal;
-  const expansions = doExpand ? await deps.expander!.expand(query) : [];
+  // Graceful degradation: a missing/failed expansion model must never break
+  // search — fall back to no expansions (vector + BM25 + RRF still run).
+  let expansions: ExpandedQuery[] = [];
+  if (doExpand) {
+    try {
+      expansions = await deps.expander!.expand(query);
+    } catch {
+      expansions = [];
+    }
+  }
 
   // Original lists carry weight 2.0; routed expansion lists carry 1.0.
   const lists: RankedItem[][] = [baseVec, baseFts];
@@ -84,17 +99,28 @@ export async function hybridSearch(
   );
   const candidates = fused.slice(0, candidateLimit);
 
-  if (!doRerank) {
-    return candidates
+  // Shared RRF-only fallback: returned when rerank is disabled OR when the
+  // reranker is unavailable/throws, so search always degrades gracefully to
+  // vector + BM25 + RRF instead of failing.
+  const rrfFallback = () =>
+    candidates
       .slice(0, k)
       .map((c) => ({ id: c.id, score: c.rrfScore }))
       .filter((r) => r.score >= minScore);
-  }
 
-  const texts = candidates.map(
-    (c) => deps.getText(repChunk.get(c.id) ?? c.id) ?? ""
-  );
-  const rerankScores = await deps.reranker!.rank(query, texts);
+  if (!doRerank) return rrfFallback();
+
+  let rerankScores: number[];
+  try {
+    const texts = candidates.map(
+      (c) => deps.getText(repChunk.get(c.id) ?? c.id) ?? ""
+    );
+    rerankScores = await deps.reranker!.rank(query, texts);
+  } catch {
+    // Graceful degradation: a missing/failed rerank model must never throw out
+    // of search — fall back to the RRF-fused ranking.
+    return rrfFallback();
+  }
 
   const blended = positionAwareBlend(
     candidates.map((c, i) => ({
