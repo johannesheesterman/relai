@@ -141,7 +141,7 @@ describe("Relai hybrid search", () => {
   let relai: Relai;
 
   beforeEach(() => {
-    relai = new Relai({ dbPath: ":memory:", embedder: createMockEmbedder(), rerank: false });
+    relai = new Relai({ dbPath: ":memory:", embedder: createMockEmbedder(), rerank: false, expand: false });
   });
 
   afterEach(async () => {

@@ -5,6 +5,7 @@ import { createVectorIndex } from "./vector-index.js";
 import { createEmbedder } from "./embedder.js";
 import { createFtsIndex } from "./fts-index.js";
 import { createReranker } from "./reranker.js";
+import { createQueryExpander } from "./query-expansion.js";
 import { createChunkStore } from "./chunk-store.js";
 import { chunkText } from "./chunker.js";
 import { viewIdOf } from "./ids.js";
@@ -15,6 +16,7 @@ import type {
   ChunkStore,
   Embedder,
   FtsIndex,
+  QueryExpander,
   Reranker,
   SearchOptions,
   View,
@@ -32,6 +34,8 @@ export type RelaiConfig = {
   embedder?: Embedder;
   rerankModel?: string;
   rerank?: boolean;
+  generateModel?: string;
+  expand?: boolean;
 };
 
 const DEFAULT_DB_DIR = join(homedir(), ".config", "relai");
@@ -48,6 +52,9 @@ export class Relai {
   private reranker: Reranker | null = null;
   private rerankEnabled: boolean;
   private rerankModel?: string;
+  private expander: QueryExpander | null = null;
+  private expandEnabled: boolean;
+  private generateModel?: string;
   private textCache = new Map<string, string>();
   private textCacheWarmed = false;
 
@@ -65,12 +72,20 @@ export class Relai {
     this.embedder = config?.embedder ?? createEmbedder({ model: config?.embedModel });
     this.rerankEnabled = config?.rerank ?? true;
     this.rerankModel = config?.rerankModel;
+    this.expandEnabled = config?.expand ?? true;
+    this.generateModel = config?.generateModel;
   }
 
   private getReranker(): Reranker | undefined {
     if (!this.rerankEnabled) return undefined;
     if (!this.reranker) this.reranker = createReranker({ model: this.rerankModel });
     return this.reranker;
+  }
+
+  private getExpander(): QueryExpander | undefined {
+    if (!this.expandEnabled) return undefined;
+    if (!this.expander) this.expander = createQueryExpander({ model: this.generateModel });
+    return this.expander;
   }
 
   private warmTextCache() {
@@ -114,6 +129,7 @@ export class Relai {
   ): Promise<View[]> {
     this.warmTextCache();
     const rerank = options.rerank ?? this.rerankEnabled;
+    const expand = options.expand ?? this.expandEnabled;
     const deps: SearchDeps = {
       embedQuery: (q) => this.embedder.embedQuery(q),
       vectorSearch: (vec, n) => this.vectorIndex.search(vec, n),
@@ -121,8 +137,9 @@ export class Relai {
       getText: (id) => this.chunkStore.getText(id) ?? this.textCache.get(viewIdOf(id)),
       idToGroup: viewIdOf,
       reranker: rerank ? this.getReranker() : undefined,
+      expander: expand ? this.getExpander() : undefined,
     };
-    const ranked = await hybridSearch(deps, query, { ...options, k, rerank });
+    const ranked = await hybridSearch(deps, query, { ...options, k, rerank, expand });
 
     // Collapse any chunk ids to view ids, keeping best rank, deduped.
     const seen = new Set<string>();
@@ -191,6 +208,7 @@ export class Relai {
 
   async dispose(): Promise<void> {
     if (this.reranker) await this.reranker.dispose();
+    if (this.expander) await this.expander.dispose();
     await this.embedder.dispose();
     this.db.close();
   }

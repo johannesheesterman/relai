@@ -1,5 +1,5 @@
 // src/search-pipeline.ts
-import type { RankedItem, SearchOptions, Reranker } from "./types.js";
+import type { RankedItem, SearchOptions, Reranker, QueryExpander } from "./types.js";
 import { reciprocalRankFusion, positionAwareBlend } from "./fusion.js";
 
 export type SearchDeps = {
@@ -9,7 +9,11 @@ export type SearchDeps = {
   getText: (id: string) => string | undefined;
   idToGroup?: (id: string) => string;
   reranker?: Reranker;
+  expander?: QueryExpander;
 };
+
+const STRONG_MIN = 0.85;
+const STRONG_GAP = 0.15;
 
 export async function hybridSearch(
   deps: SearchDeps,
@@ -23,10 +27,32 @@ export async function hybridSearch(
 
   const width = Math.max(candidateLimit, k * 4);
   const vector = await deps.embedQuery(query);
-  const [vecHits, ftsHits] = [
-    await deps.vectorSearch(vector, width),
-    deps.ftsSearch(query, width),
-  ];
+  const baseVec = await deps.vectorSearch(vector, width);
+  const baseFts = deps.ftsSearch(query, width);
+
+  // Strong-signal short-circuit: when the top FTS hit dominates, the keyword
+  // match is unambiguous and expansion only adds noise — skip it.
+  const top = baseFts[0]?.score ?? 0;
+  const second = baseFts[1]?.score ?? 0;
+  const strongSignal =
+    baseFts.length > 0 && top >= STRONG_MIN && top - second >= STRONG_GAP;
+
+  const doExpand =
+    (options.expand ?? true) && !!deps.expander && !strongSignal;
+  const expansions = doExpand ? await deps.expander!.expand(query) : [];
+
+  // Original lists carry weight 2.0; routed expansion lists carry 1.0.
+  const lists: RankedItem[][] = [baseVec, baseFts];
+  const weights: number[] = [2.0, 2.0];
+  for (const e of expansions) {
+    if (e.type === "lex") {
+      lists.push(deps.ftsSearch(e.query, width));
+    } else {
+      const ev = await deps.embedQuery(e.query);
+      lists.push(await deps.vectorSearch(ev, width));
+    }
+    weights.push(1.0);
+  }
 
   // Collapse chunk ids to view (group) ids before fusion so vector hits (chunk
   // ids) and FTS hits (view ids) align on the same id space. Keep the best
@@ -41,19 +67,21 @@ export async function hybridSearch(
     }
     return Array.from(best.values()).sort((a, b) => b.score - a.score);
   };
-  const vecCollapsed = collapse(vecHits);
-  const ftsCollapsed = collapse(ftsHits);
+  const collapsedLists = lists.map(collapse);
 
   const repChunk = new Map<string, string>(); // groupId -> best chunk id (for rerank text)
-  for (const it of ftsCollapsed) repChunk.set(group(it.id), it.id);
-  for (const it of vecCollapsed) repChunk.set(group(it.id), it.id);
+  // Apply later lists first so the original vector list (index 0) wins ties and
+  // its real chunk ids (carrying `#n`) become the representatives for rerank text.
+  for (let i = collapsedLists.length - 1; i >= 0; i--) {
+    for (const it of collapsedLists[i]!) repChunk.set(group(it.id), it.id);
+  }
 
   const toGrouped = (l: RankedItem[]) =>
     l.map((it) => ({ id: group(it.id), score: it.score }));
-  const fused = reciprocalRankFusion([
-    toGrouped(vecCollapsed),
-    toGrouped(ftsCollapsed),
-  ]);
+  const fused = reciprocalRankFusion(
+    collapsedLists.map(toGrouped),
+    weights
+  );
   const candidates = fused.slice(0, candidateLimit);
 
   if (!doRerank) {

@@ -43,4 +43,39 @@ describe("hybridSearch", () => {
     await hybridSearch({ ...deps, reranker }, "q", { rerank: false });
     expect(called).toBe(false);
   });
+
+  test("expansion adds routed lists and weights original higher", async () => {
+    const calls: { fts: string[]; vec: number } = { fts: [], vec: 0 };
+    const deps = {
+      embedQuery: async () => [1, 0, 0],
+      vectorSearch: async () => { calls.vec++; return [{ id: "a", score: 0.5 }]; },
+      ftsSearch: (q: string) => { calls.fts.push(q); return [{ id: "b", score: 0.5 }]; },
+      getText: (id: string) => id,
+      expander: {
+        expand: async () => [
+          { type: "lex" as const, query: "keyword variant" },
+          { type: "vec" as const, query: "semantic variant" },
+        ],
+        dispose: async () => {},
+      },
+    };
+    const out = await hybridSearch(deps, "orig", { rerank: false, expand: true, k: 5 });
+    expect(calls.fts).toContain("orig");            // original FTS
+    expect(calls.fts).toContain("keyword variant"); // lex routed to FTS
+    expect(calls.vec).toBeGreaterThanOrEqual(2);    // original + vec/hyde routed to vector
+    expect(out.length).toBeGreaterThan(0);
+  });
+
+  test("strong FTS signal skips expansion", async () => {
+    let expandCalled = false;
+    const deps = {
+      embedQuery: async () => [1, 0, 0],
+      vectorSearch: async () => [{ id: "a", score: 0.5 }],
+      ftsSearch: () => [{ id: "b", score: 0.95 }, { id: "c", score: 0.5 }], // gap 0.45 ≥ 0.15, top ≥ 0.85
+      getText: (id: string) => id,
+      expander: { expand: async () => { expandCalled = true; return []; }, dispose: async () => {} },
+    };
+    await hybridSearch(deps, "exact", { rerank: false, expand: true });
+    expect(expandCalled).toBe(false);
+  });
 });

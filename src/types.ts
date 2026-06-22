@@ -64,6 +64,7 @@ export type SearchOptions = {
   k?: number;
   candidateLimit?: number;
   rerank?: boolean;
+  expand?: boolean;
   minScore?: number;
 };
 
