@@ -140,7 +140,7 @@ describe("Relai hybrid search", () => {
   let relai: Relai;
 
   beforeEach(() => {
-    relai = new Relai({ dbPath: ":memory:", embedder: createMockEmbedder() });
+    relai = new Relai({ dbPath: ":memory:", embedder: createMockEmbedder(), rerank: false });
   });
 
   afterEach(async () => {
@@ -152,5 +152,11 @@ describe("Relai hybrid search", () => {
     await relai.index({ source: "docs", remoteId: "2", text: "the SKU-99XZ part number appears only here" });
     const results = await relai.search("SKU-99XZ", 5);
     expect(results[0]?.id).toBe("view:docs:2");
+  });
+
+  test("search accepts options and rerank can be disabled", async () => {
+    await relai.index({ source: "docs", remoteId: "1", text: "alpha bravo charlie" });
+    const out = await relai.search("alpha", 3, { rerank: false });
+    expect(out[0]?.id).toBe("view:docs:1");
   });
 });

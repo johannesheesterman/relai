@@ -4,12 +4,15 @@ import { createClaimStore } from "./claim-store.js";
 import { createVectorIndex } from "./vector-index.js";
 import { createEmbedder } from "./embedder.js";
 import { createFtsIndex } from "./fts-index.js";
-import { reciprocalRankFusion } from "./fusion.js";
+import { createReranker } from "./reranker.js";
+import { hybridSearch, type SearchDeps } from "./search-pipeline.js";
 import type {
   Claim,
   ClaimStore,
   Embedder,
   FtsIndex,
+  Reranker,
+  SearchOptions,
   View,
   ViewInput,
   ViewStore,
@@ -23,6 +26,8 @@ export type RelaiConfig = {
   dbPath?: string;
   embedModel?: string;
   embedder?: Embedder;
+  rerankModel?: string;
+  rerank?: boolean;
 };
 
 const DEFAULT_DB_DIR = join(homedir(), ".config", "relai");
@@ -35,6 +40,11 @@ export class Relai {
   private vectorIndex: VectorIndex;
   private ftsIndex: FtsIndex;
   private embedder: Embedder;
+  private reranker: Reranker | null = null;
+  private rerankEnabled: boolean;
+  private rerankModel?: string;
+  private textCache = new Map<string, string>();
+  private textCacheWarmed = false;
 
   constructor(config?: RelaiConfig) {
     const dbPath = config?.dbPath ?? DEFAULT_DB_PATH;
@@ -47,6 +57,24 @@ export class Relai {
     this.vectorIndex = createVectorIndex(this.db);
     this.ftsIndex = createFtsIndex(this.db);
     this.embedder = config?.embedder ?? createEmbedder({ model: config?.embedModel });
+    this.rerankEnabled = config?.rerank ?? true;
+    this.rerankModel = config?.rerankModel;
+  }
+
+  private getReranker(): Reranker | undefined {
+    if (!this.rerankEnabled) return undefined;
+    if (!this.reranker) this.reranker = createReranker({ model: this.rerankModel });
+    return this.reranker;
+  }
+
+  private warmTextCache() {
+    if (this.textCacheWarmed) return;
+    const rows = this.db.prepare(`SELECT id, text FROM views`).all() as {
+      id: string;
+      text: string;
+    }[];
+    for (const r of rows) this.textCache.set(r.id, r.text);
+    this.textCacheWarmed = true;
   }
 
   async index(input: ViewInput): Promise<View> {
@@ -56,21 +84,29 @@ export class Relai {
     };
     await this.viewStore.put(view);
     this.ftsIndex.upsert(view.id, view.text);
+    this.textCache.set(view.id, view.text);
     const vector = await this.embedder.embed(view.text);
     await this.vectorIndex.upsert(view.id, vector);
     return view;
   }
 
-  async search(query: string, k: number = 5): Promise<View[]> {
-    const vector = await this.embedder.embedQuery(query);
-    const [vecHits, ftsHits] = [
-      await this.vectorIndex.search(vector, Math.max(k * 4, 20)),
-      this.ftsIndex.search(query, Math.max(k * 4, 20)),
-    ];
-    const fused = reciprocalRankFusion([vecHits, ftsHits]);
-    const topIds = fused.slice(0, k).map((f) => f.id);
-    const views = await this.viewStore.getMany(topIds);
-    const order = new Map(topIds.map((id, i) => [id, i]));
+  async search(
+    query: string,
+    k: number = 5,
+    options: SearchOptions = {}
+  ): Promise<View[]> {
+    this.warmTextCache();
+    const rerank = options.rerank ?? this.rerankEnabled;
+    const deps: SearchDeps = {
+      embedQuery: (q) => this.embedder.embedQuery(q),
+      vectorSearch: (vec, n) => this.vectorIndex.search(vec, n),
+      ftsSearch: (q, n) => this.ftsIndex.search(q, n),
+      getText: (id) => this.textCache.get(id),
+      reranker: rerank ? this.getReranker() : undefined,
+    };
+    const ranked = await hybridSearch(deps, query, { ...options, k, rerank });
+    const views = await this.viewStore.getMany(ranked.map((r) => r.id));
+    const order = new Map(ranked.map((r, i) => [r.id, i]));
     return views.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
   }
 
@@ -111,6 +147,7 @@ export class Relai {
       };
       await this.viewStore.put(claimView);
       this.ftsIndex.upsert(claimView.id, text);
+      this.textCache.set(claimView.id, text);
       const vector = await this.embedder.embed(text);
       await this.vectorIndex.upsert(claimView.id, vector);
     }
@@ -127,6 +164,7 @@ export class Relai {
   }
 
   async dispose(): Promise<void> {
+    if (this.reranker) await this.reranker.dispose();
     await this.embedder.dispose();
     this.db.close();
   }

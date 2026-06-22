@@ -14,14 +14,15 @@ async function main() {
     readFileSync(new URL("./dataset.json", import.meta.url), "utf8")
   );
   const dbPath = join(tmpdir(), `relai-bench-${process.pid}.sqlite`);
-  const relai = new Relai({ dbPath });
+  const rerank = process.env.BENCH_RERANK === "1";
+  const relai = new Relai({ dbPath, rerank });
 
   for (const d of data.docs) await relai.index(d);
 
   const k = 5;
   let p = 0, r = 0, f = 0;
   for (const q of data.queries) {
-    const results = await relai.search(q.query, k);
+    const results = await relai.search(q.query, k, { rerank });
     const ids = results.map((v) => v.id);
     p += precisionAtK(ids, q.relevant, k);
     r += recallAtK(ids, q.relevant, k);
