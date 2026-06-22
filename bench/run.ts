@@ -15,14 +15,17 @@ async function main() {
   );
   const dbPath = join(tmpdir(), `relai-bench-${process.pid}.sqlite`);
   const rerank = process.env.BENCH_RERANK === "1";
-  const relai = new Relai({ dbPath, rerank });
+  // Expansion needs the generation model; keep the benchmark hermetic/offline by
+  // default and opt in explicitly with BENCH_EXPAND=1.
+  const expand = process.env.BENCH_EXPAND === "1";
+  const relai = new Relai({ dbPath, rerank, expand });
 
   for (const d of data.docs) await relai.index(d);
 
   const k = 5;
   let p = 0, r = 0, f = 0;
   for (const q of data.queries) {
-    const results = await relai.search(q.query, k, { rerank });
+    const results = await relai.search(q.query, k, { rerank, expand });
     const ids = results.map((v) => v.id);
     p += precisionAtK(ids, q.relevant, k);
     r += recallAtK(ids, q.relevant, k);

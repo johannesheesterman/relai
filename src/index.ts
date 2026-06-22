@@ -7,5 +7,13 @@ export type {
   VectorIndex,
   ViewStore,
   ClaimStore,
+  RankedItem,
+  FtsIndex,
+  Chunk,
+  ChunkStore,
+  Reranker,
+  QueryExpander,
+  ExpandedQuery,
+  SearchOptions,
 } from "./types.js";
 export { createEmbedder, pullModel } from "./embedder.js";

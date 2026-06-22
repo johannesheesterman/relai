@@ -104,9 +104,9 @@ export async function hybridSearch(
   // vector + BM25 + RRF instead of failing.
   const rrfFallback = () =>
     candidates
-      .slice(0, k)
       .map((c) => ({ id: c.id, score: c.rrfScore }))
-      .filter((r) => r.score >= minScore);
+      .filter((r) => r.score >= minScore)
+      .slice(0, k);
 
   if (!doRerank) return rrfFallback();
 

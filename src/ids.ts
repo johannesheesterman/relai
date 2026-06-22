@@ -1,6 +1,7 @@
 export function viewIdOf(chunkId: string): string {
-  const hash = chunkId.lastIndexOf("#");
-  return hash === -1 ? chunkId : chunkId.slice(0, hash);
+  // Strip only a trailing chunk suffix `#<digits>`, so view ids whose remoteId
+  // legitimately contains '#' are not mis-collapsed during fusion grouping.
+  return chunkId.replace(/#\d+$/, "");
 }
 
 export function chunkId(viewId: string, index: number): string {
