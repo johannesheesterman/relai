@@ -118,9 +118,6 @@ bun run src/cli/relai.ts match --predicate customer --ref customer:acme
 
 # Expand context (outgoing + incoming claims)
 bun run src/cli/relai.ts describe customer:acme
-
-# Run the retrieval-quality benchmark (precision/recall/F1)
-bun run src/cli/relai.ts bench
 ```
 
 The `--no-rerank` and `--no-expand` flags trade result quality for latency: they
@@ -202,15 +199,6 @@ The reranker and generation models are lazy-loaded and optional: pull them with
 `relai pull --all`, or skip them per-search with `--no-rerank` / `--no-expand`.
 Model URIs are overridable via `RELAI_EMBED_MODEL`, `RELAI_RERANK_MODEL`, and
 `RELAI_GENERATE_MODEL`.
-
-## Benchmark
-
-A small labeled eval corpus under `bench/` measures retrieval quality
-(precision@k / recall@k / F1@k) so pipeline changes are measured, not guessed:
-
-```bash
-bun run bench        # or: bun run src/cli/relai.ts bench
-```
 
 ## Tests
 

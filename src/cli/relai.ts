@@ -37,7 +37,6 @@ Usage:
   relai describe <id>                                               Show outgoing and incoming claims
   relai related <id>                                                Show claims touching an id
   relai pull [--all]                                                Download models
-  relai bench                                                       Run benchmark
 `);
 }
 
@@ -255,16 +254,6 @@ async function main() {
         const generatePath = await pullModel(GENERATE_MODEL);
         console.log(`Model ready: ${generatePath}`);
       }
-      break;
-    }
-
-    case "bench": {
-      const proc = Bun.spawn(["bun", "run", "bench/run.ts"], {
-        stdout: "inherit",
-        stderr: "inherit",
-      });
-      const code = await proc.exited;
-      if (code !== 0) process.exit(code);
       break;
     }
 
