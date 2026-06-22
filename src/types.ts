@@ -53,3 +53,8 @@ export interface FtsIndex {
   remove(id: string): void;
   search(query: string, k: number): RankedItem[];
 }
+
+export interface Reranker {
+  rank(query: string, documents: string[]): Promise<number[]>;
+  dispose(): Promise<void>;
+}
