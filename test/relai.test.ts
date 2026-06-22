@@ -26,6 +26,7 @@ function createMockEmbedder(): Embedder {
   return {
     async embed(text: string) { return hash(text); },
     async embedQuery(text: string) { return hash(text); },
+    async embedMany(texts: string[]) { return texts.map((t) => hash(t)); },
     async dispose() {},
   };
 }
@@ -158,5 +159,15 @@ describe("Relai hybrid search", () => {
     await relai.index({ source: "docs", remoteId: "1", text: "alpha bravo charlie" });
     const out = await relai.search("alpha", 3, { rerank: false });
     expect(out[0]?.id).toBe("view:docs:1");
+  });
+
+  test("a long view is chunked and a query matching only a late section still retrieves it", async () => {
+    const longText =
+      "Intro about onboarding.\n\n".repeat(20) +
+      "The secret passphrase is XYZZY-PLUGH.\n\n" +
+      "Closing remarks about offboarding.\n\n".repeat(20);
+    await relai.index({ source: "docs", remoteId: "long", text: longText });
+    const results = await relai.search("XYZZY-PLUGH passphrase", 5, { rerank: false });
+    expect(results[0]?.id).toBe("view:docs:long");
   });
 });

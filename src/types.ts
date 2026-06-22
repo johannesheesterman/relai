@@ -26,6 +26,7 @@ export type ViewInput = {
 export interface Embedder {
   embed(text: string): Promise<number[]>;
   embedQuery(text: string): Promise<number[]>;
+  embedMany(texts: string[]): Promise<number[][]>;
   dispose(): Promise<void>;
 }
 
@@ -67,3 +68,10 @@ export type SearchOptions = {
 };
 
 export type Chunk = { text: string; pos: number };
+
+export interface ChunkStore {
+  putChunks(viewId: string, chunks: Chunk[]): void;
+  removeByView(viewId: string): void;
+  getText(chunkId: string): string | undefined;
+  allChunkTexts(): { id: string; viewId: string; text: string }[];
+}

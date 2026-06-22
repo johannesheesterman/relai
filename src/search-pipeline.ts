@@ -7,6 +7,7 @@ export type SearchDeps = {
   vectorSearch: (vec: number[], k: number) => Promise<RankedItem[]>;
   ftsSearch: (q: string, k: number) => RankedItem[];
   getText: (id: string) => string | undefined;
+  idToGroup?: (id: string) => string;
   reranker?: Reranker;
 };
 
@@ -27,7 +28,32 @@ export async function hybridSearch(
     deps.ftsSearch(query, width),
   ];
 
-  const fused = reciprocalRankFusion([vecHits, ftsHits]);
+  // Collapse chunk ids to view (group) ids before fusion so vector hits (chunk
+  // ids) and FTS hits (view ids) align on the same id space. Keep the best
+  // chunk per group, and remember the representative chunk id for rerank text.
+  const group = deps.idToGroup ?? ((id: string) => id);
+  const collapse = (list: RankedItem[]) => {
+    const best = new Map<string, RankedItem>();
+    for (const it of list) {
+      const g = group(it.id);
+      const cur = best.get(g);
+      if (!cur || it.score > cur.score) best.set(g, { id: it.id, score: it.score });
+    }
+    return Array.from(best.values()).sort((a, b) => b.score - a.score);
+  };
+  const vecCollapsed = collapse(vecHits);
+  const ftsCollapsed = collapse(ftsHits);
+
+  const repChunk = new Map<string, string>(); // groupId -> best chunk id (for rerank text)
+  for (const it of ftsCollapsed) repChunk.set(group(it.id), it.id);
+  for (const it of vecCollapsed) repChunk.set(group(it.id), it.id);
+
+  const toGrouped = (l: RankedItem[]) =>
+    l.map((it) => ({ id: group(it.id), score: it.score }));
+  const fused = reciprocalRankFusion([
+    toGrouped(vecCollapsed),
+    toGrouped(ftsCollapsed),
+  ]);
   const candidates = fused.slice(0, candidateLimit);
 
   if (!doRerank) {
@@ -37,7 +63,9 @@ export async function hybridSearch(
       .filter((r) => r.score >= minScore);
   }
 
-  const texts = candidates.map((c) => deps.getText(c.id) ?? "");
+  const texts = candidates.map(
+    (c) => deps.getText(repChunk.get(c.id) ?? c.id) ?? ""
+  );
   const rerankScores = await deps.reranker!.rank(query, texts);
 
   const blended = positionAwareBlend(

@@ -5,10 +5,14 @@ import { createVectorIndex } from "./vector-index.js";
 import { createEmbedder } from "./embedder.js";
 import { createFtsIndex } from "./fts-index.js";
 import { createReranker } from "./reranker.js";
+import { createChunkStore } from "./chunk-store.js";
+import { chunkText } from "./chunker.js";
+import { viewIdOf } from "./ids.js";
 import { hybridSearch, type SearchDeps } from "./search-pipeline.js";
 import type {
   Claim,
   ClaimStore,
+  ChunkStore,
   Embedder,
   FtsIndex,
   Reranker,
@@ -39,6 +43,7 @@ export class Relai {
   private claimStore: ClaimStore;
   private vectorIndex: VectorIndex;
   private ftsIndex: FtsIndex;
+  private chunkStore: ChunkStore;
   private embedder: Embedder;
   private reranker: Reranker | null = null;
   private rerankEnabled: boolean;
@@ -56,6 +61,7 @@ export class Relai {
     this.claimStore = createClaimStore(this.db);
     this.vectorIndex = createVectorIndex(this.db);
     this.ftsIndex = createFtsIndex(this.db);
+    this.chunkStore = createChunkStore(this.db);
     this.embedder = config?.embedder ?? createEmbedder({ model: config?.embedModel });
     this.rerankEnabled = config?.rerank ?? true;
     this.rerankModel = config?.rerankModel;
@@ -84,10 +90,21 @@ export class Relai {
     };
     await this.viewStore.put(view);
     this.ftsIndex.upsert(view.id, view.text);
-    this.textCache.set(view.id, view.text);
-    const vector = await this.embedder.embed(view.text);
-    await this.vectorIndex.upsert(view.id, vector);
+    await this.indexChunks(view.id, view.text);
     return view;
+  }
+
+  private async indexChunks(viewId: string, text: string) {
+    const chunks = chunkText(text);
+    this.chunkStore.putChunks(viewId, chunks);
+    // Remove any stale chunk vectors for this view, then add fresh ones.
+    // (Vectors keyed by chunk id; a re-index with fewer chunks must not leave orphans.)
+    await this.vectorIndex.remove(viewId); // legacy single-vector id, if present
+    const vectors = await this.embedder.embedMany(chunks.map((c) => c.text));
+    for (let i = 0; i < chunks.length; i++) {
+      await this.vectorIndex.upsert(`${viewId}#${i}`, vectors[i]!);
+    }
+    this.textCache.set(viewId, text);
   }
 
   async search(
@@ -101,12 +118,23 @@ export class Relai {
       embedQuery: (q) => this.embedder.embedQuery(q),
       vectorSearch: (vec, n) => this.vectorIndex.search(vec, n),
       ftsSearch: (q, n) => this.ftsIndex.search(q, n),
-      getText: (id) => this.textCache.get(id),
+      getText: (id) => this.chunkStore.getText(id) ?? this.textCache.get(viewIdOf(id)),
+      idToGroup: viewIdOf,
       reranker: rerank ? this.getReranker() : undefined,
     };
     const ranked = await hybridSearch(deps, query, { ...options, k, rerank });
-    const views = await this.viewStore.getMany(ranked.map((r) => r.id));
-    const order = new Map(ranked.map((r, i) => [r.id, i]));
+
+    // Collapse any chunk ids to view ids, keeping best rank, deduped.
+    const seen = new Set<string>();
+    const viewOrder: string[] = [];
+    for (const r of ranked) {
+      const vid = viewIdOf(r.id);
+      if (seen.has(vid)) continue;
+      seen.add(vid);
+      viewOrder.push(vid);
+    }
+    const views = await this.viewStore.getMany(viewOrder);
+    const order = new Map(viewOrder.map((id, i) => [id, i]));
     return views.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
   }
 
@@ -147,9 +175,7 @@ export class Relai {
       };
       await this.viewStore.put(claimView);
       this.ftsIndex.upsert(claimView.id, text);
-      this.textCache.set(claimView.id, text);
-      const vector = await this.embedder.embed(text);
-      await this.vectorIndex.upsert(claimView.id, vector);
+      await this.indexChunks(claimView.id, text);
     }
 
     return claim;

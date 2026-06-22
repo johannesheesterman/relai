@@ -76,6 +76,12 @@ export function createEmbedder(options?: {
       return embedText(formatQueryForEmbedding(text));
     },
 
+    async embedMany(texts: string[]): Promise<number[][]> {
+      const out: number[][] = [];
+      for (const t of texts) out.push(await embedText(formatDocForEmbedding(t)));
+      return out;
+    },
+
     async dispose() {
       if (context) {
         await context.dispose();
