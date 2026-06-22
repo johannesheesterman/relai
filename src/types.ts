@@ -58,3 +58,10 @@ export interface Reranker {
   rank(query: string, documents: string[]): Promise<number[]>;
   dispose(): Promise<void>;
 }
+
+export type SearchOptions = {
+  k?: number;
+  candidateLimit?: number;
+  rerank?: boolean;
+  minScore?: number;
+};
