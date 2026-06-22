@@ -65,3 +65,5 @@ export type SearchOptions = {
   rerank?: boolean;
   minScore?: number;
 };
+
+export type Chunk = { text: string; pos: number };
