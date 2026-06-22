@@ -12,18 +12,24 @@ import { viewIdOf } from "./ids.js";
 import { hybridSearch, type SearchDeps } from "./search-pipeline.js";
 import type {
   Claim,
+  ClaimObject,
+  ClaimPattern,
   ClaimStore,
   ChunkStore,
+  Description,
   Embedder,
   FtsIndex,
   QueryExpander,
   Reranker,
   SearchOptions,
+  Thing,
+  ThingId,
   View,
   ViewInput,
   ViewStore,
   VectorIndex,
 } from "./types.js";
+import { ref } from "./types.js";
 import { homedir } from "os";
 import { join } from "path";
 import { mkdirSync, existsSync } from "fs";
@@ -32,6 +38,7 @@ export type RelaiConfig = {
   dbPath?: string;
   embedModel?: string;
   embedder?: Embedder;
+  vectorIndex?: VectorIndex;
   rerankModel?: string;
   rerank?: boolean;
   generateModel?: string;
@@ -66,7 +73,7 @@ export class Relai {
     this.db = openDatabase(dbPath);
     this.viewStore = createViewStore(this.db);
     this.claimStore = createClaimStore(this.db);
-    this.vectorIndex = createVectorIndex(this.db);
+    this.vectorIndex = config?.vectorIndex ?? createVectorIndex(this.db);
     this.ftsIndex = createFtsIndex(this.db);
     this.chunkStore = createChunkStore(this.db);
     this.embedder = config?.embedder ?? createEmbedder({ model: config?.embedModel });
@@ -98,15 +105,16 @@ export class Relai {
     this.textCacheWarmed = true;
   }
 
-  async index(input: ViewInput): Promise<View> {
-    const view: View = {
-      ...input,
-      id: `view:${input.source}:${input.remoteId}`,
-    };
-    await this.viewStore.put(view);
-    this.ftsIndex.upsert(view.id, view.text);
-    await this.indexChunks(view.id, view.text);
-    return view;
+  async put(idOrThing: ThingId | Thing, text?: string): Promise<Thing> {
+    const thing: Thing =
+      typeof idOrThing === "string"
+        ? { id: idOrThing, text: text ?? "" }
+        : idOrThing;
+
+    await this.viewStore.put(thing);
+    this.ftsIndex.upsert(thing.id, thing.text);
+    await this.indexChunks(thing.id, thing.text);
+    return thing;
   }
 
   private async indexChunks(viewId: string, text: string) {
@@ -120,6 +128,17 @@ export class Relai {
       await this.vectorIndex.upsert(`${viewId}#${i}`, vectors[i]!);
     }
     this.textCache.set(viewId, text);
+  }
+
+  async index(input: ViewInput): Promise<Thing> {
+    return this.put({
+      id: `view:${input.source}:${input.remoteId}`,
+      source: input.source,
+      remoteId: input.remoteId,
+      type: input.type,
+      text: input.text,
+      links: input.links,
+    });
   }
 
   async search(
@@ -156,54 +175,46 @@ export class Relai {
   }
 
   async claim(
-    from: string,
-    type: string,
-    to: string,
+    subject: ThingId,
+    predicate: string,
+    object: ClaimObject,
     createdBy?: string
   ): Promise<Claim> {
     const claim: Claim = {
-      id: crypto.randomUUID(),
-      from,
-      type,
-      to,
+      subject,
+      predicate,
+      object,
       createdBy,
     };
     await this.claimStore.put(claim);
-
-    const [fromViews, toViews] = await Promise.all([
-      this.viewStore.getMany([from]),
-      this.viewStore.getMany([to]),
-    ]);
-    const fromView = fromViews[0];
-    const toView = toViews[0];
-
-    if (fromView && toView) {
-      const text = `${fromView.text} ${type} ${toView.text}`;
-      const claimView: View = {
-        id: `view:claim:${claim.id}`,
-        source: "claim",
-        remoteId: claim.id,
-        type: "claim",
-        text,
-        links: [
-          { type: "from", to: from },
-          { type: "to", to: to },
-        ],
-      };
-      await this.viewStore.put(claimView);
-      this.ftsIndex.upsert(claimView.id, text);
-      await this.indexChunks(claimView.id, text);
-    }
-
     return claim;
   }
 
-  async related(viewId: string): Promise<Claim[]> {
-    const [fromClaims, toClaims] = await Promise.all([
-      this.claimStore.from(viewId),
-      this.claimStore.to(viewId),
+  async unclaim(
+    subject: ThingId,
+    predicate?: string,
+    object?: ClaimObject
+  ): Promise<void> {
+    await this.claimStore.delete({ subject, predicate, object });
+  }
+
+  async match(pattern: ClaimPattern): Promise<Claim[]> {
+    return this.claimStore.match(pattern);
+  }
+
+  async describe(id: ThingId): Promise<Description> {
+    const [thing] = await this.viewStore.getMany([id]);
+    const [claims, incoming] = await Promise.all([
+      this.claimStore.match({ subject: id }),
+      this.claimStore.match({ object: ref(id) }),
     ]);
-    return [...fromClaims, ...toClaims];
+
+    return { thing, claims, incoming };
+  }
+
+  async related(viewId: string): Promise<Claim[]> {
+    const description = await this.describe(viewId);
+    return [...description.claims, ...description.incoming];
   }
 
   async dispose(): Promise<void> {

@@ -1,5 +1,5 @@
 import type { Database } from "./db.js";
-import type { View, ViewStore } from "./types.js";
+import type { Thing, ViewStore } from "./types.js";
 
 export function createViewStore(db: Database): ViewStore {
   db.exec(`
@@ -22,18 +22,18 @@ export function createViewStore(db: Database): ViewStore {
   `);
 
   return {
-    async put(view: View) {
+    async put(view: Thing) {
       putStmt.run(
         view.id,
-        view.source,
-        view.remoteId,
+        view.source ?? "",
+        view.remoteId ?? "",
         view.type ?? null,
         view.text,
         view.links ? JSON.stringify(view.links) : null
       );
     },
 
-    async getMany(ids: string[]): Promise<View[]> {
+    async getMany(ids: string[]): Promise<Thing[]> {
       if (ids.length === 0) return [];
       const placeholders = ids.map(() => "?").join(",");
       const rows = db
@@ -41,8 +41,8 @@ export function createViewStore(db: Database): ViewStore {
         .all(...ids);
       return rows.map((row: any) => ({
         id: row.id,
-        source: row.source,
-        remoteId: row.remote_id,
+        source: row.source || undefined,
+        remoteId: row.remote_id || undefined,
         type: row.type ?? undefined,
         text: row.text,
         links: row.links ? JSON.parse(row.links) : undefined,

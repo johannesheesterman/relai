@@ -1,19 +1,19 @@
-export type View = {
-  id: string;
-  source: string;
-  remoteId: string;
-  type?: string;
+export type ThingId = string;
+
+export type Ref = { ref: ThingId };
+
+export type ClaimObject = Ref | string | number | boolean | null;
+
+export type Thing = {
+  id: ThingId;
   text: string;
+  type?: string;
+  source?: string;
+  remoteId?: string;
   links?: { type: string; to: string }[];
 };
 
-export type Claim = {
-  id: string;
-  from: string;
-  type: string;
-  to: string;
-  createdBy?: string;
-};
+export type View = Thing;
 
 export type ViewInput = {
   source: string;
@@ -22,6 +22,38 @@ export type ViewInput = {
   text: string;
   links?: { type: string; to: string }[];
 };
+
+export type Claim = {
+  subject: ThingId;
+  predicate: string;
+  object: ClaimObject;
+  createdBy?: string;
+};
+
+export type ClaimPattern = {
+  subject?: ThingId;
+  predicate?: string;
+  object?: ClaimObject;
+};
+
+export type Description = {
+  thing?: Thing;
+  claims: Claim[];
+  incoming: Claim[];
+};
+
+export function ref(id: ThingId): Ref {
+  return { ref: id };
+}
+
+export function isRef(value: ClaimObject): value is Ref {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "ref" in value &&
+    typeof value.ref === "string"
+  );
+}
 
 export interface Embedder {
   embed(text: string): Promise<number[]>;
@@ -37,14 +69,14 @@ export interface VectorIndex {
 }
 
 export interface ViewStore {
-  put(view: View): Promise<void>;
-  getMany(ids: string[]): Promise<View[]>;
+  put(view: Thing): Promise<void>;
+  getMany(ids: string[]): Promise<Thing[]>;
 }
 
 export interface ClaimStore {
   put(claim: Claim): Promise<void>;
-  from(viewId: string): Promise<Claim[]>;
-  to(viewId: string): Promise<Claim[]>;
+  delete(pattern: ClaimPattern): Promise<void>;
+  match(pattern: ClaimPattern): Promise<Claim[]>;
 }
 
 export type RankedItem = { id: string; score: number };
