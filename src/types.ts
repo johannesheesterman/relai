@@ -47,3 +47,11 @@ export interface ClaimStore {
   from(viewId: string): Promise<Claim[]>;
   to(viewId: string): Promise<Claim[]>;
 }
+
+export type RankedItem = { id: string; score: number };
+
+export interface FtsIndex {
+  upsert(id: string, text: string): void;
+  remove(id: string): void;
+  search(query: string, k: number): RankedItem[];
+}
