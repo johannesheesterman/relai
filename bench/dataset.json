@@ -1,0 +1,29 @@
+{
+  "docs": [
+    { "source": "tickets", "remoteId": "1", "type": "ticket", "text": "Customer reports the export to CSV button does nothing on the reports page." },
+    { "source": "tickets", "remoteId": "2", "type": "ticket", "text": "User cannot reset their password; the reset email never arrives in their inbox." },
+    { "source": "tickets", "remoteId": "3", "type": "ticket", "text": "Dark mode toggle in settings does not persist after the user logs out and back in." },
+    { "source": "tickets", "remoteId": "4", "type": "ticket", "text": "Two-factor authentication codes from the SMS provider are delayed by several minutes." },
+    { "source": "tickets", "remoteId": "5", "type": "ticket", "text": "The SKU-99XZ part number is missing from the inventory dashboard after the last sync." },
+    { "source": "tickets", "remoteId": "6", "type": "ticket", "text": "Webhook deliveries are failing with a 500 error since this morning's deploy." },
+    { "source": "docs", "remoteId": "billing", "type": "doc", "text": "Billing overview. Invoices are generated monthly for every active subscription. To export invoices as CSV, open Reports, choose a date range, and click Export; the file downloads to your browser. Refunds are processed within 5 business days back to the original payment method. VAT is applied per the customer's billing country and shown as a separate line item. Failed payments trigger an automatic retry after 24 hours, and after three failures the subscription is paused. You can update the card on file from the Billing settings page at any time without interrupting service." },
+    { "source": "docs", "remoteId": "auth", "type": "doc", "text": "Authentication guide. Users sign in with email and password over HTTPS. Passwords are hashed with bcrypt and never stored in plain text. If a user forgets their password they click 'Forgot password', receive a reset link by email, and the link expires after one hour. Two-factor authentication can be enabled in security settings using either an authenticator app or SMS. Session tokens are JWTs that expire after 24 hours; refresh tokens rotate on every use. Admins can force a global sign-out which invalidates all active sessions immediately." },
+    { "source": "docs", "remoteId": "webhooks", "type": "doc", "text": "Webhooks let you receive real-time events. Configure an endpoint URL in the developer settings and select the event types you care about, such as invoice.paid or subscription.cancelled. Each delivery is signed with an HMAC-SHA256 signature in the header so you can verify authenticity. If your endpoint returns a non-2xx status the delivery is retried with exponential backoff up to five times over 24 hours. Failed deliveries appear in the webhook log where you can inspect the payload and replay them manually." },
+    { "source": "docs", "remoteId": "deploy", "type": "doc", "text": "Deployment runbook. The application is deployed via a blue-green strategy. Build artifacts are produced by CI and promoted to staging automatically. A human approves promotion to production, which switches the load balancer to the new color. If error rates spike after a deploy, run the rollback command to switch traffic back to the previous color within seconds. Database migrations are applied before traffic is switched and must be backward compatible. Health checks must pass on the new color before promotion completes." },
+    { "source": "docs", "remoteId": "search", "type": "doc", "text": "Search architecture. The system combines keyword and semantic search. Documents are chunked, embedded with a small embedding model, and stored in a vector index alongside a full-text BM25 index. At query time both indexes are queried and the result lists are merged with reciprocal rank fusion. An optional cross-encoder reranker reorders the top candidates for higher precision. This hybrid design balances exact keyword matches against fuzzy semantic similarity." },
+    { "source": "kb", "remoteId": "refund", "type": "article", "text": "How refunds work: a refund returns money to the original payment method within five business days." },
+    { "source": "kb", "remoteId": "darkmode", "type": "article", "text": "Enabling dark mode: open Settings, choose Appearance, and select the Dark theme. Your choice is saved to your profile." },
+    { "source": "kb", "remoteId": "twofa", "type": "article", "text": "Setting up two-factor authentication adds a second step at sign-in using an authenticator app or an SMS code." },
+    { "source": "kb", "remoteId": "rollback", "type": "article", "text": "Rolling back a release switches production traffic back to the previous deployment color in seconds." }
+  ],
+  "queries": [
+    { "query": "csv export broken", "relevant": ["view:tickets:1", "view:docs:billing"] },
+    { "query": "password reset email not arriving", "relevant": ["view:tickets:2", "view:docs:auth"] },
+    { "query": "dark mode not saved", "relevant": ["view:tickets:3", "view:kb:darkmode"] },
+    { "query": "two factor authentication SMS", "relevant": ["view:tickets:4", "view:docs:auth", "view:kb:twofa"] },
+    { "query": "SKU-99XZ", "relevant": ["view:tickets:5"] },
+    { "query": "webhook delivery failing 500", "relevant": ["view:tickets:6", "view:docs:webhooks"] },
+    { "query": "how do refunds work", "relevant": ["view:kb:refund", "view:docs:billing"] },
+    { "query": "roll back a deploy that increased errors", "relevant": ["view:kb:rollback", "view:docs:deploy"] }
+  ]
+}
