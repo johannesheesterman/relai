@@ -75,3 +75,10 @@ export interface ChunkStore {
   getText(chunkId: string): string | undefined;
   allChunkTexts(): { id: string; viewId: string; text: string }[];
 }
+
+export type ExpandedQuery = { type: "lex" | "vec" | "hyde"; query: string };
+
+export interface QueryExpander {
+  expand(query: string): Promise<ExpandedQuery[]>;
+  dispose(): Promise<void>;
+}
