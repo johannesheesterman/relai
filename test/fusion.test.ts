@@ -1,6 +1,6 @@
 // test/fusion.test.ts
 import { describe, test, expect } from "bun:test";
-import { reciprocalRankFusion } from "../src/fusion.js";
+import { reciprocalRankFusion, positionAwareBlend } from "../src/fusion.js";
 
 describe("reciprocalRankFusion", () => {
   test("doc ranked high in both lists wins", () => {
@@ -29,5 +29,25 @@ describe("reciprocalRankFusion", () => {
     const l2 = [{ id: "z", score: 1 }, { id: "b", score: 0.9 }];
     const fused = reciprocalRankFusion([l1, l2]);
     expect(fused[0]?.id).toBe("a");
+  });
+});
+
+describe("positionAwareBlend", () => {
+  test("top retrieval rank is protected from reranker disagreement", () => {
+    // 'a' at rrfRank 1 with low rerank; 'b' at rrfRank 11 with high rerank.
+    const blended = positionAwareBlend([
+      { id: "a", rrfRank: 1, rerankScore: 0.1 },
+      { id: "b", rrfRank: 11, rerankScore: 0.95 },
+    ]);
+    // a: 0.75*1 + 0.25*0.1 = 0.775 ; b: 0.40*(1/11) + 0.60*0.95 ≈ 0.606
+    expect(blended[0]?.id).toBe("a");
+  });
+
+  test("strong reranker rescues a mid-rank doc", () => {
+    const blended = positionAwareBlend([
+      { id: "a", rrfRank: 4, rerankScore: 0.05 },
+      { id: "b", rrfRank: 5, rerankScore: 0.99 },
+    ]);
+    expect(blended[0]?.id).toBe("b");
   });
 });

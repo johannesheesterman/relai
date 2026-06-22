@@ -38,3 +38,19 @@ export function reciprocalRankFusion(
     .sort((a, b) => b.rrfScore - a.rrfScore)
     .map((e, i) => ({ ...e, rank: i + 1 }));
 }
+
+export function positionAwareBlend(
+  items: { id: string; rrfRank: number; rerankScore: number }[]
+): RankedItem[] {
+  return items
+    .map((it) => {
+      let w: number;
+      if (it.rrfRank <= 3) w = 0.75;
+      else if (it.rrfRank <= 10) w = 0.6;
+      else w = 0.4;
+      const rrfScore = 1 / it.rrfRank;
+      const score = w * rrfScore + (1 - w) * it.rerankScore;
+      return { id: it.id, score };
+    })
+    .sort((a, b) => b.score - a.score);
+}
