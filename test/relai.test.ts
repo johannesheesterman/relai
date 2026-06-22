@@ -3,6 +3,7 @@ import { openDatabase, type Database } from "../src/db.js";
 import { createViewStore } from "../src/view-store.js";
 import { createClaimStore } from "../src/claim-store.js";
 import { createVectorIndex } from "../src/vector-index.js";
+import { Relai } from "../src/relai.js";
 import type { Embedder, ViewStore, ClaimStore, VectorIndex } from "../src/types.js";
 
 function createMockEmbedder(): Embedder {
@@ -132,5 +133,24 @@ describe("Relai claim embedding", () => {
     const results = await vectorIndex.search(queryVector, 5);
     expect(results.length).toBeGreaterThan(0);
     expect(results[0].id).toBe("view:claim:c1");
+  });
+});
+
+describe("Relai hybrid search", () => {
+  let relai: Relai;
+
+  beforeEach(() => {
+    relai = new Relai({ dbPath: ":memory:", embedder: createMockEmbedder() });
+  });
+
+  afterEach(async () => {
+    await relai.dispose();
+  });
+
+  test("hybrid search finds exact keyword match that vector search alone may rank lower", async () => {
+    await relai.index({ source: "docs", remoteId: "1", text: "general notes about the system architecture and design" });
+    await relai.index({ source: "docs", remoteId: "2", text: "the SKU-99XZ part number appears only here" });
+    const results = await relai.search("SKU-99XZ", 5);
+    expect(results[0]?.id).toBe("view:docs:2");
   });
 });

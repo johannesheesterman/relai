@@ -3,10 +3,13 @@ import { createViewStore } from "./view-store.js";
 import { createClaimStore } from "./claim-store.js";
 import { createVectorIndex } from "./vector-index.js";
 import { createEmbedder } from "./embedder.js";
+import { createFtsIndex } from "./fts-index.js";
+import { reciprocalRankFusion } from "./fusion.js";
 import type {
   Claim,
   ClaimStore,
   Embedder,
+  FtsIndex,
   View,
   ViewInput,
   ViewStore,
@@ -19,6 +22,7 @@ import { mkdirSync, existsSync } from "fs";
 export type RelaiConfig = {
   dbPath?: string;
   embedModel?: string;
+  embedder?: Embedder;
 };
 
 const DEFAULT_DB_DIR = join(homedir(), ".config", "relai");
@@ -29,6 +33,7 @@ export class Relai {
   private viewStore: ViewStore;
   private claimStore: ClaimStore;
   private vectorIndex: VectorIndex;
+  private ftsIndex: FtsIndex;
   private embedder: Embedder;
 
   constructor(config?: RelaiConfig) {
@@ -40,7 +45,8 @@ export class Relai {
     this.viewStore = createViewStore(this.db);
     this.claimStore = createClaimStore(this.db);
     this.vectorIndex = createVectorIndex(this.db);
-    this.embedder = createEmbedder({ model: config?.embedModel });
+    this.ftsIndex = createFtsIndex(this.db);
+    this.embedder = config?.embedder ?? createEmbedder({ model: config?.embedModel });
   }
 
   async index(input: ViewInput): Promise<View> {
@@ -49,6 +55,7 @@ export class Relai {
       id: `view:${input.source}:${input.remoteId}`,
     };
     await this.viewStore.put(view);
+    this.ftsIndex.upsert(view.id, view.text);
     const vector = await this.embedder.embed(view.text);
     await this.vectorIndex.upsert(view.id, vector);
     return view;
@@ -56,13 +63,15 @@ export class Relai {
 
   async search(query: string, k: number = 5): Promise<View[]> {
     const vector = await this.embedder.embedQuery(query);
-    const matches = await this.vectorIndex.search(vector, k);
-    const views = await this.viewStore.getMany(matches.map((m) => m.id));
-
-    const scoreMap = new Map(matches.map((m) => [m.id, m.score]));
-    return views.sort(
-      (a, b) => (scoreMap.get(b.id) ?? 0) - (scoreMap.get(a.id) ?? 0)
-    );
+    const [vecHits, ftsHits] = [
+      await this.vectorIndex.search(vector, Math.max(k * 4, 20)),
+      this.ftsIndex.search(query, Math.max(k * 4, 20)),
+    ];
+    const fused = reciprocalRankFusion([vecHits, ftsHits]);
+    const topIds = fused.slice(0, k).map((f) => f.id);
+    const views = await this.viewStore.getMany(topIds);
+    const order = new Map(topIds.map((id, i) => [id, i]));
+    return views.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
   }
 
   async claim(
@@ -101,6 +110,7 @@ export class Relai {
         ],
       };
       await this.viewStore.put(claimView);
+      this.ftsIndex.upsert(claimView.id, text);
       const vector = await this.embedder.embed(text);
       await this.vectorIndex.upsert(claimView.id, vector);
     }
