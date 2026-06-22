@@ -23,13 +23,18 @@ export function createVectorIndex(db: Database): VectorIndex {
   }
 
   return {
-    async upsert(viewId: string, vector: number[]) {
+    async upsert(id: string, vector: number[]) {
       ensureTable(vector.length);
       const embedding = new Float32Array(vector);
-      db.prepare(`DELETE FROM vectors WHERE view_id = ?`).run(viewId);
+      db.prepare(`DELETE FROM vectors WHERE view_id = ?`).run(id);
       db.prepare(
         `INSERT INTO vectors (view_id, embedding) VALUES (?, ?)`
-      ).run(viewId, embedding);
+      ).run(id, embedding);
+    },
+
+    async remove(id: string) {
+      if (!tableReady) return;
+      db.prepare(`DELETE FROM vectors WHERE view_id = ?`).run(id);
     },
 
     async search(vector: number[], k: number) {
@@ -41,7 +46,7 @@ export function createVectorIndex(db: Database): VectorIndex {
         )
         .all(embedding, k);
       return rows.map((row: any) => ({
-        viewId: row.view_id,
+        id: row.view_id,
         score: 1 - row.distance,
       }));
     },

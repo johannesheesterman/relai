@@ -57,9 +57,9 @@ export class Relai {
   async search(query: string, k: number = 5): Promise<View[]> {
     const vector = await this.embedder.embedQuery(query);
     const matches = await this.vectorIndex.search(vector, k);
-    const views = await this.viewStore.getMany(matches.map((m) => m.viewId));
+    const views = await this.viewStore.getMany(matches.map((m) => m.id));
 
-    const scoreMap = new Map(matches.map((m) => [m.viewId, m.score]));
+    const scoreMap = new Map(matches.map((m) => [m.id, m.score]));
     return views.sort(
       (a, b) => (scoreMap.get(b.id) ?? 0) - (scoreMap.get(a.id) ?? 0)
     );

@@ -27,7 +27,7 @@ describe("VectorIndex", () => {
 
     const results = await index.search(v1, 2);
     expect(results).toHaveLength(2);
-    expect(results[0].viewId).toBe("a");
+    expect(results[0].id).toBe("a");
     expect(results[0].score).toBeGreaterThan(results[1].score);
   });
 
@@ -44,8 +44,15 @@ describe("VectorIndex", () => {
 
     const results = await index.search(v2, 1);
     expect(results).toHaveLength(1);
-    expect(results[0].viewId).toBe("a");
+    expect(results[0].id).toBe("a");
     expect(results[0].score).toBeCloseTo(1, 1);
+  });
+
+  test("remove deletes a vector", async () => {
+    const v1 = normalize([1, 0, 0, 0]);
+    await index.upsert("a", v1);
+    await index.remove("a");
+    expect(await index.search(v1, 5)).toEqual([]);
   });
 
   test("k limits results", async () => {

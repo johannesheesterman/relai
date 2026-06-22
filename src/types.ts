@@ -30,11 +30,9 @@ export interface Embedder {
 }
 
 export interface VectorIndex {
-  upsert(viewId: string, vector: number[]): Promise<void>;
-  search(
-    vector: number[],
-    k: number
-  ): Promise<{ viewId: string; score: number }[]>;
+  upsert(id: string, vector: number[]): Promise<void>;
+  remove(id: string): Promise<void>;
+  search(vector: number[], k: number): Promise<RankedItem[]>;
 }
 
 export interface ViewStore {

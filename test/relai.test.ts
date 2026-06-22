@@ -131,6 +131,6 @@ describe("Relai claim embedding", () => {
     const queryVector = await embedder.embedQuery("Bug report about login type_of Bug: a defect or error");
     const results = await vectorIndex.search(queryVector, 5);
     expect(results.length).toBeGreaterThan(0);
-    expect(results[0].viewId).toBe("view:claim:c1");
+    expect(results[0].id).toBe("view:claim:c1");
   });
 });
