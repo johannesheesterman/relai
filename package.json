@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "bun run src/cli/relai.ts",
     "test": "bun test",
+    "bench": "bun run bench/run.ts",
     "build": "bun build src/index.ts --outdir dist --target node"
   },
   "dependencies": {
