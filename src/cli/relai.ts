@@ -1,7 +1,14 @@
 #!/usr/bin/env bun
 import { Relai } from "../relai.js";
 import { pullModel } from "../embedder.js";
-import { ref, type ClaimObject } from "../types.js";
+import { ref, type ClaimObject, type SearchOptions } from "../types.js";
+
+const RERANK_MODEL =
+  process.env.RELAI_RERANK_MODEL ??
+  "hf:ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF/qwen3-reranker-0.6b-q8_0.gguf";
+const GENERATE_MODEL =
+  process.env.RELAI_GENERATE_MODEL ??
+  "hf:ggml-org/Qwen2.5-0.5B-Instruct-GGUF/qwen2.5-0.5b-instruct-q8_0.gguf";
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -12,20 +19,24 @@ function flag(name: string): string | undefined {
   return args[idx + 1];
 }
 
+function hasFlag(name: string): boolean {
+  return args.includes(name);
+}
+
 function usage() {
   console.log(`relai - tiny semantic index
 
 Usage:
   relai put <id> --text <text>                                      Store searchable text
-  relai index --source <s> --remoteId <r> --text <t> [--type <t>]   Index a legacy view
-  relai search <query> [-k <n>]                                     Semantic search
+  relai index --source <s> --remoteId <r> --text <t> [--type <t>]   Index a view
+  relai search <query> [-k <n>] [--no-rerank] [--no-expand] [--explain]   Hybrid search
   relai claim <subject> <predicate> --ref <id>                      Add a reference claim
   relai claim <subject> <predicate> --value <json>                  Add a literal claim
   relai unclaim <subject> [predicate] [--ref <id>|--value <json>]   Remove claims
   relai match [--subject <id>] [--predicate <p>] [--ref <id>|--value <json>]
   relai describe <id>                                               Show outgoing and incoming claims
   relai related <id>                                                Show claims touching an id
-  relai pull                                                        Download model
+  relai pull [--all]                                                Download models
 `);
 }
 
@@ -96,19 +107,30 @@ async function main() {
     case "search": {
       const query = args[1];
       if (!query) {
-        console.error("Usage: relai search <query> [-k <n>]");
+        console.error(
+          "Usage: relai search <query> [-k <n>] [--no-rerank] [--no-expand] [--explain]"
+        );
         process.exit(1);
       }
       const k = parseInt(flag("-k") ?? "5", 10);
+      const options: SearchOptions = {};
+      if (hasFlag("--no-rerank")) options.rerank = false;
+      if (hasFlag("--no-expand")) options.expand = false;
+      const explain = hasFlag("--explain");
       const relai = createRelai();
       try {
-        const views = await relai.search(query, k);
+        const views = await relai.search(query, k, options);
         if (views.length === 0) {
           console.log("No results found.");
         } else {
           for (const v of views) {
             console.log(`[${v.id}] ${v.text.slice(0, 120)}`);
           }
+        }
+        if (explain) {
+          console.error(
+            `(rerank=${options.rerank !== false}, expand=${options.expand !== false}, k=${k}, results=${views.length})`
+          );
         }
       } finally {
         await relai.dispose();
@@ -224,6 +246,14 @@ async function main() {
       console.log("Downloading embedding model...");
       const path = await pullModel();
       console.log(`Model ready: ${path}`);
+      if (hasFlag("--all")) {
+        console.log("Downloading reranker model...");
+        const rerankPath = await pullModel(RERANK_MODEL);
+        console.log(`Model ready: ${rerankPath}`);
+        console.log("Downloading generation model...");
+        const generatePath = await pullModel(GENERATE_MODEL);
+        console.log(`Model ready: ${generatePath}`);
+      }
       break;
     }
 

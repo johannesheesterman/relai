@@ -1,4 +1,4 @@
-import { describe, test, expect, afterEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -30,6 +30,9 @@ function createMockEmbedder(): Embedder {
     async embedQuery(text: string) {
       return hash(text);
     },
+    async embedMany(texts: string[]) {
+      return texts.map((t) => hash(t));
+    },
     async dispose() {},
   };
 }
@@ -38,12 +41,16 @@ function createMockVectorIndex(): VectorIndex {
   const ids: string[] = [];
 
   return {
-    async upsert(viewId: string) {
-      if (!ids.includes(viewId)) ids.push(viewId);
+    async upsert(id: string) {
+      if (!ids.includes(id)) ids.push(id);
+    },
+    async remove(id: string) {
+      const i = ids.indexOf(id);
+      if (i >= 0) ids.splice(i, 1);
     },
     async search(_vector: number[], k: number) {
-      return ids.slice(0, k).map((viewId, index) => ({
-        viewId,
+      return ids.slice(0, k).map((id, index) => ({
+        id,
         score: 1 - index / 100,
       }));
     },
@@ -64,6 +71,8 @@ describe("Relai core claims", () => {
       dbPath: join(tmpDir, "relai.sqlite"),
       embedder: createMockEmbedder(),
       vectorIndex: createMockVectorIndex(),
+      rerank: false,
+      expand: false,
     });
   }
 
@@ -156,6 +165,46 @@ describe("Relai core claims", () => {
     } finally {
       await relai.dispose();
     }
+  });
+});
+
+describe("Relai hybrid search", () => {
+  let relai: Relai;
+
+  beforeEach(() => {
+    relai = new Relai({
+      dbPath: ":memory:",
+      embedder: createMockEmbedder(),
+      rerank: false,
+      expand: false,
+    });
+  });
+
+  afterEach(async () => {
+    await relai.dispose();
+  });
+
+  test("hybrid search finds exact keyword match that vector search alone may rank lower", async () => {
+    await relai.index({ source: "docs", remoteId: "1", text: "general notes about the system architecture and design" });
+    await relai.index({ source: "docs", remoteId: "2", text: "the SKU-99XZ part number appears only here" });
+    const results = await relai.search("SKU-99XZ", 5);
+    expect(results[0]?.id).toBe("view:docs:2");
+  });
+
+  test("search accepts options and rerank can be disabled", async () => {
+    await relai.index({ source: "docs", remoteId: "1", text: "alpha bravo charlie" });
+    const out = await relai.search("alpha", 3, { rerank: false });
+    expect(out[0]?.id).toBe("view:docs:1");
+  });
+
+  test("a long view is chunked and a query matching only a late section still retrieves it", async () => {
+    const longText =
+      "Intro about onboarding.\n\n".repeat(20) +
+      "The secret passphrase is XYZZY-PLUGH.\n\n" +
+      "Closing remarks about offboarding.\n\n".repeat(20);
+    await relai.index({ source: "docs", remoteId: "long", text: longText });
+    const results = await relai.search("XYZZY-PLUGH passphrase", 5, { rerank: false });
+    expect(results[0]?.id).toBe("view:docs:long");
   });
 });
 

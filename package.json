@@ -9,7 +9,8 @@
   },
   "scripts": {
     "dev": "bun run src/cli/relai.ts",
-    "test": "bun test",
+    "test": "bun test $(ls test/*.test.ts | grep -vE 'reranker|query-expansion')",
+    "test:integration": "bun test test/reranker.test.ts test/query-expansion.test.ts",
     "build": "bun build src/index.ts --outdir dist --target node"
   },
   "dependencies": {

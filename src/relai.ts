@@ -3,15 +3,28 @@ import { createViewStore } from "./view-store.js";
 import { createClaimStore } from "./claim-store.js";
 import { createVectorIndex } from "./vector-index.js";
 import { createEmbedder } from "./embedder.js";
+import { createFtsIndex } from "./fts-index.js";
+import { createReranker } from "./reranker.js";
+import { createQueryExpander } from "./query-expansion.js";
+import { createChunkStore } from "./chunk-store.js";
+import { chunkText } from "./chunker.js";
+import { viewIdOf } from "./ids.js";
+import { hybridSearch, type SearchDeps } from "./search-pipeline.js";
 import type {
   Claim,
   ClaimObject,
   ClaimPattern,
   ClaimStore,
+  ChunkStore,
   Description,
   Embedder,
+  FtsIndex,
+  QueryExpander,
+  Reranker,
+  SearchOptions,
   Thing,
   ThingId,
+  View,
   ViewInput,
   ViewStore,
   VectorIndex,
@@ -26,6 +39,10 @@ export type RelaiConfig = {
   embedModel?: string;
   embedder?: Embedder;
   vectorIndex?: VectorIndex;
+  rerankModel?: string;
+  rerank?: boolean;
+  generateModel?: string;
+  expand?: boolean;
 };
 
 const DEFAULT_DB_DIR = join(homedir(), ".config", "relai");
@@ -36,7 +53,17 @@ export class Relai {
   private viewStore: ViewStore;
   private claimStore: ClaimStore;
   private vectorIndex: VectorIndex;
+  private ftsIndex: FtsIndex;
+  private chunkStore: ChunkStore;
   private embedder: Embedder;
+  private reranker: Reranker | null = null;
+  private rerankEnabled: boolean;
+  private rerankModel?: string;
+  private expander: QueryExpander | null = null;
+  private expandEnabled: boolean;
+  private generateModel?: string;
+  private textCache = new Map<string, string>();
+  private textCacheWarmed = false;
 
   constructor(config?: RelaiConfig) {
     const dbPath = config?.dbPath ?? DEFAULT_DB_PATH;
@@ -47,22 +74,60 @@ export class Relai {
     this.viewStore = createViewStore(this.db);
     this.claimStore = createClaimStore(this.db);
     this.vectorIndex = config?.vectorIndex ?? createVectorIndex(this.db);
+    this.ftsIndex = createFtsIndex(this.db);
+    this.chunkStore = createChunkStore(this.db);
     this.embedder = config?.embedder ?? createEmbedder({ model: config?.embedModel });
+    this.rerankEnabled = config?.rerank ?? true;
+    this.rerankModel = config?.rerankModel;
+    this.expandEnabled = config?.expand ?? true;
+    this.generateModel = config?.generateModel;
   }
 
-  async put(
-    idOrThing: ThingId | Thing,
-    text?: string
-  ): Promise<Thing> {
+  private getReranker(): Reranker | undefined {
+    if (!this.rerankEnabled) return undefined;
+    if (!this.reranker) this.reranker = createReranker({ model: this.rerankModel });
+    return this.reranker;
+  }
+
+  private getExpander(): QueryExpander | undefined {
+    if (!this.expandEnabled) return undefined;
+    if (!this.expander) this.expander = createQueryExpander({ model: this.generateModel });
+    return this.expander;
+  }
+
+  private warmTextCache() {
+    if (this.textCacheWarmed) return;
+    const rows = this.db.prepare(`SELECT id, text FROM views`).all() as {
+      id: string;
+      text: string;
+    }[];
+    for (const r of rows) this.textCache.set(r.id, r.text);
+    this.textCacheWarmed = true;
+  }
+
+  async put(idOrThing: ThingId | Thing, text?: string): Promise<Thing> {
     const thing: Thing =
       typeof idOrThing === "string"
         ? { id: idOrThing, text: text ?? "" }
         : idOrThing;
 
     await this.viewStore.put(thing);
-    const vector = await this.embedder.embed(thing.text);
-    await this.vectorIndex.upsert(thing.id, vector);
+    this.ftsIndex.upsert(thing.id, thing.text);
+    await this.indexChunks(thing.id, thing.text);
     return thing;
+  }
+
+  private async indexChunks(viewId: string, text: string) {
+    const chunks = chunkText(text);
+    this.chunkStore.putChunks(viewId, chunks);
+    // Remove any stale chunk vectors for this view, then add fresh ones.
+    // (Vectors keyed by chunk id; a re-index with fewer chunks must not leave orphans.)
+    await this.vectorIndex.remove(viewId); // legacy single-vector id, if present
+    const vectors = await this.embedder.embedMany(chunks.map((c) => c.text));
+    for (let i = 0; i < chunks.length; i++) {
+      await this.vectorIndex.upsert(`${viewId}#${i}`, vectors[i]!);
+    }
+    this.textCache.set(viewId, text);
   }
 
   async index(input: ViewInput): Promise<Thing> {
@@ -76,15 +141,37 @@ export class Relai {
     });
   }
 
-  async search(query: string, k: number = 5): Promise<Thing[]> {
-    const vector = await this.embedder.embedQuery(query);
-    const matches = await this.vectorIndex.search(vector, k);
-    const views = await this.viewStore.getMany(matches.map((m) => m.viewId));
+  async search(
+    query: string,
+    k: number = 5,
+    options: SearchOptions = {}
+  ): Promise<View[]> {
+    this.warmTextCache();
+    const rerank = options.rerank ?? this.rerankEnabled;
+    const expand = options.expand ?? this.expandEnabled;
+    const deps: SearchDeps = {
+      embedQuery: (q) => this.embedder.embedQuery(q),
+      vectorSearch: (vec, n) => this.vectorIndex.search(vec, n),
+      ftsSearch: (q, n) => this.ftsIndex.search(q, n),
+      getText: (id) => this.chunkStore.getText(id) ?? this.textCache.get(viewIdOf(id)),
+      idToGroup: viewIdOf,
+      reranker: rerank ? this.getReranker() : undefined,
+      expander: expand ? this.getExpander() : undefined,
+    };
+    const ranked = await hybridSearch(deps, query, { ...options, k, rerank, expand });
 
-    const scoreMap = new Map(matches.map((m) => [m.viewId, m.score]));
-    return views.sort(
-      (a, b) => (scoreMap.get(b.id) ?? 0) - (scoreMap.get(a.id) ?? 0)
-    );
+    // Collapse any chunk ids to view ids, keeping best rank, deduped.
+    const seen = new Set<string>();
+    const viewOrder: string[] = [];
+    for (const r of ranked) {
+      const vid = viewIdOf(r.id);
+      if (seen.has(vid)) continue;
+      seen.add(vid);
+      viewOrder.push(vid);
+    }
+    const views = await this.viewStore.getMany(viewOrder);
+    const order = new Map(viewOrder.map((id, i) => [id, i]));
+    return views.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
   }
 
   async claim(
@@ -131,6 +218,8 @@ export class Relai {
   }
 
   async dispose(): Promise<void> {
+    if (this.reranker) await this.reranker.dispose();
+    if (this.expander) await this.expander.dispose();
     await this.embedder.dispose();
     this.db.close();
   }

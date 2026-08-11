@@ -58,15 +58,14 @@ export function isRef(value: ClaimObject): value is Ref {
 export interface Embedder {
   embed(text: string): Promise<number[]>;
   embedQuery(text: string): Promise<number[]>;
+  embedMany(texts: string[]): Promise<number[][]>;
   dispose(): Promise<void>;
 }
 
 export interface VectorIndex {
-  upsert(viewId: string, vector: number[]): Promise<void>;
-  search(
-    vector: number[],
-    k: number
-  ): Promise<{ viewId: string; score: number }[]>;
+  upsert(id: string, vector: number[]): Promise<void>;
+  remove(id: string): Promise<void>;
+  search(vector: number[], k: number): Promise<RankedItem[]>;
 }
 
 export interface ViewStore {
@@ -78,4 +77,41 @@ export interface ClaimStore {
   put(claim: Claim): Promise<void>;
   delete(pattern: ClaimPattern): Promise<void>;
   match(pattern: ClaimPattern): Promise<Claim[]>;
+}
+
+export type RankedItem = { id: string; score: number };
+
+export interface FtsIndex {
+  upsert(id: string, text: string): void;
+  remove(id: string): void;
+  search(query: string, k: number): RankedItem[];
+}
+
+export interface Reranker {
+  rank(query: string, documents: string[]): Promise<number[]>;
+  dispose(): Promise<void>;
+}
+
+export type SearchOptions = {
+  k?: number;
+  candidateLimit?: number;
+  rerank?: boolean;
+  expand?: boolean;
+  minScore?: number;
+};
+
+export type Chunk = { text: string; pos: number };
+
+export interface ChunkStore {
+  putChunks(viewId: string, chunks: Chunk[]): void;
+  removeByView(viewId: string): void;
+  getText(chunkId: string): string | undefined;
+  allChunkTexts(): { id: string; viewId: string; text: string }[];
+}
+
+export type ExpandedQuery = { type: "lex" | "vec" | "hyde"; query: string };
+
+export interface QueryExpander {
+  expand(query: string): Promise<ExpandedQuery[]>;
+  dispose(): Promise<void>;
 }
